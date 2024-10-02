@@ -1,0 +1,59 @@
+name: Chart Release Push
+
+on:
+  workflow_run:
+    workflows:
+      - Image Release Build
+    types:
+      - completed
+
+# permissions:
+#   TODO:
+#   - check out repository
+#   - pull artifacts from image release workflow
+
+jobs:
+  push-chart:
+    name: Push Chart
+    runs-on: ubuntu-24.04
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
+        with:
+          persist-credentials: false
+
+      - name: Set Environment Variables
+        uses: ./.github/actions/set-env-variables
+
+      - name: Getting image tag
+        id: tag
+        run: |
+          tag=${GITHUB_REF##*/}
+          echo tag=$tag >> $GITHUB_OUTPUT
+
+      - name: Download artifact digests
+        uses: actions/download-artifact@v4
+        with:
+          name: Makefile.digests-${{ steps.tag.outputs.tag }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Generate Helm chart from templates (digest substitution)
+        shell: bash
+        run: |
+          mv Makefile.digests install/kubernetes/
+          cd install/kubernetes/
+          make RELEASE=yes CILIUM_VERSION=${{ steps.tag.outputs.tag }}
+
+      - name: Login to Helm registry (quay.io)
+        shell: bash
+        run: |
+          helm registry login quay.io -u ${{ secrets.QUAY_CHARTS_USERNAME }} -p ${{ secrets.QUAY_CHARTS_PASSWORD }}
+
+      - name: Push Helm chart
+        shell: bash
+        run: |
+          helm package install/kubernetes/cilium
+          helm push cilium-*.tgz "oci://quay.io/${{ env.QUAY_CHARTS_ORGANIZATION }}"
